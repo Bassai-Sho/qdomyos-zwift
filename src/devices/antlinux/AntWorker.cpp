@@ -66,27 +66,35 @@ inline int estimateCadence(double speed_kmh) noexcept {
     return static_cast<int>(std::min((speed_kmh - 7.0) * 4.0 + 160.0, 200.0) + 0.5) & ~1;
 }
 
-QString getVenvSitePackages() {
-    QByteArray sudoUser = qgetenv("SUDO_USER");
-    QByteArray qzUser = qgetenv("QZ_USER");
-    QString homePath = (!sudoUser.isEmpty()) ? "/home/" + QString::fromLocal8Bit(sudoUser) :
-                      (!qzUser.isEmpty())   ? "/home/" + QString::fromLocal8Bit(qzUser) : QDir::homePath();
-    
-    QString venvPythonPath = homePath + "/ant_venv/bin/python";
+QString AntWorker::getVenvSitePackages() {
+    QString venvPythonPath = "/opt/ant_venv/bin/python3";
+
+    // Check if Docker/system-wide venv exists
     if (!QFile::exists(venvPythonPath)) {
-        qCritical() << "[ANT+] CRITICAL: Virtual environment not found at:" << venvPythonPath;
-        return QString();
+        // Fallback to user home directories
+        QByteArray sudoUser = qgetenv("SUDO_USER");
+        QByteArray qzUser   = qgetenv("QZ_USER");
+        QString homePath = (!sudoUser.isEmpty()) ? "/home/" + QString::fromLocal8Bit(sudoUser) :
+                          (!qzUser.isEmpty())   ? "/home/" + QString::fromLocal8Bit(qzUser) : QDir::homePath();
+        venvPythonPath = homePath + "/ant_venv/bin/python3";
+
+        if (!QFile::exists(venvPythonPath)) {
+            qCritical() << "[ANT+] CRITICAL: Virtual environment not found at /opt or user home:" << venvPythonPath;
+            return QString();
+        }
     }
 
+    // Run Python to get site-packages path
     QProcess process;
     process.start(venvPythonPath, QStringList() << "-c" << "import site; print(site.getsitepackages()[0])");
     process.waitForFinished(3000);
 
     if (process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0) {
         QString sitePackages = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
-        if (!sitePackages.isEmpty()) { return sitePackages; }
+        if (!sitePackages.isEmpty()) return sitePackages;
     }
-    qCritical() << "[ANT+] Failed to determine venv site-packages path.";
+
+    qCritical() << "[ANT+] Failed to determine venv site-packages path using:" << venvPythonPath;
     return QString();
 }
 

@@ -5,7 +5,8 @@ import QtQuick.Controls.Material 2.0
 import Qt.labs.settings 1.0
 
 ColumnLayout {    
-    anchors.fill: parent
+    Layout.fillWidth: true 
+    Layout.fillHeight: true
     Loader {
         id: chartFooterLoader
         sourceComponent: ChartFooterInnerJS

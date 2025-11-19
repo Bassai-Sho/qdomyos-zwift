@@ -22,6 +22,7 @@
 #include <QQmlApplicationEngine>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QLibrary> // For plugin loading
 #include <QList>
 #ifdef CHARTJS
 #include <QtWebView/QtWebView>
@@ -48,20 +49,31 @@
 
 #include "handleurl.h"
 
+// --- START OF FINAL FIX: All required headers are placed here at the top level ---
+#include <pwd.h>      // For getpwuid() and the passwd struct
+#include <grp.h>      // For initgroups()
+#include <cerrno>     // For errno
+#include <cstring>    // For strerror()
+// --- END OF FINAL FIX ---
+
+// --- START: Includes required for the WebView Timeout Fix ---
+#include <QQmlNetworkAccessManagerFactory>
+#include <QNetworkAccessManager>
+#include <QDebug>
+#include <QDateTime>
+// --- END: Includes required for the WebView Timeout Fix ---
+
 #ifdef ANT_LINUX_ENABLED
-#include <thread>
-#include <chrono>
-#include <atomic>
-#include "bluetoothdevicetype.h" 
-#include "devices/antlinux/AntManager.h"
+#include <QFile>
+#include <QTextStream>
+#include <csignal>
+// These global flags are set by the argument parsing in createApplication()
+// and are used to determine if the ANT+ plugin should be loaded.
 bool ant_footpod_enabled = false;
 bool ant_verbose = false;
 int ant_device_id = 54321;
-
-// This flag ensures we only ever initialize the AntManager once,
-// even if bluetoothDeviceConnected is emitted multiple times.
-std::atomic<bool> antManagerStarted(false);
 #endif
+
 
 bool logs = true;
 bool noWriteResistance = false;
@@ -517,6 +529,35 @@ void myMessageOutput(QtMsgType type, const QMessageLogContext &context, const QS
 }
 
 int main(int argc, char *argv[]) {
+
+    // [INJECT 1] Force Software Rendering for stability
+    QCoreApplication::setAttribute(Qt::AA_UseSoftwareOpenGL); 
+
+    fprintf(stderr, ">>> [DEBUG] Checkpoint 1: main() entered at %s\n",
+            QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz").toStdString().c_str());
+    fflush(stderr);
+
+    // --- START: Build Configuration Sanity Check ---
+    // This block provides immediate feedback if the ANT_LINUX_ENABLED define
+    // was not set by the .pri file. This is a critical safety net to catch
+    // build script regressions.
+#ifndef ANT_LINUX_ENABLED
+    // We only print this warning if the user intended to use the feature.
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-ant-footpod") == 0) {
+            fprintf(stderr, "=======================================================================\n");
+            fprintf(stderr, "[BUILD ERROR] CRITICAL FAILURE:\n");
+            fprintf(stderr, "This binary was compiled WITHOUT ANT+ support ('ANT_LINUX_ENABLED' was not defined),\n");
+            fprintf(stderr, "but the '-ant-footpod' flag was provided.\n\n");
+            fprintf(stderr, "This indicates a failure in the 'antlinux.pri' build script.\n");
+            fprintf(stderr, "Please check the qmake output for errors.\n");
+            fprintf(stderr, "=======================================================================\n");
+            // We can choose to exit here for safety, as the app is in an inconsistent state.
+            return 1; 
+        }
+    }
+#endif
+
 #ifdef Q_OS_WIN32
     qputenv("QT_MULTIMEDIA_PREFERRED_PLUGINS", "windowsmediafoundation");
 #endif
@@ -524,7 +565,7 @@ int main(int argc, char *argv[]) {
 #ifdef Q_CC_MSVC
   _RTC_SetErrorFuncW(CustomRTCErrorHandler);
 #endif
-  
+
 #if !defined(Q_OS_ANDROID) && !defined(Q_OS_IOS)
     QScopedPointer<QCoreApplication> app(createApplication(argc, argv));
 #else
@@ -542,12 +583,14 @@ int main(int argc, char *argv[]) {
 
 #ifdef Q_OS_LINUX
 #ifndef Q_OS_ANDROID
-    if (getuid() && !testPeloton && !testHomeFitnessBudy && !testPowerZonePack) {
+/*
+if (getuid() && !testPeloton && !testHomeFitnessBudy && !testPowerZonePack) {
 
         printf("Runme as root!\n");
         return -1;
     } else
         printf("%s", "OK, you are root.\n");
+*/
 #endif
 #endif
 
@@ -812,6 +855,10 @@ int main(int argc, char *argv[]) {
     }    
 #endif
 
+    fprintf(stderr, ">>> [DEBUG] Checkpoint 2: About to create 'bluetooth' object at %s\n",
+            QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz").toStdString().c_str());
+    fflush(stderr);
+
     /* test virtual echelon
      * settings.setValue(QZSettings::virtual_device_echelon, true);
     virtualbike* V = new virtualbike(new bike(), noWriteResistance, noHeartService);
@@ -820,53 +867,12 @@ int main(int argc, char *argv[]) {
     bluetooth bl(logs, deviceName, noWriteResistance, noHeartService, pollDeviceTime, noConsole, testResistance,
                  bikeResistanceOffset,
                  bikeResistanceGain); // FIXED: clang-analyzer-cplusplus.NewDeleteLeaks - potential leak
-    
-    #ifdef ANT_LINUX_ENABLED
-    if (ant_footpod_enabled) {
-        qInfo() << "[main] ANT+ feature enabled. Arming startup trigger...";
 
-        QObject::connect(&bl, &bluetooth::bluetoothDeviceConnected, [&](bluetoothdevice *dev) {
-            // Use a flag to ensure this logic only ever runs once, preventing duplicate starts.
-            static std::atomic<bool> antManagerStarted(false);
-            if (antManagerStarted.exchange(true)) {
-                return; // If the flag was already true, do nothing.
-            }
+    fprintf(stderr, ">>> [DEBUG] Checkpoint 3: 'bluetooth' object created successfully at %s\n",
+            QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz").toStdString().c_str());
+    fflush(stderr);
 
-            if (dev && dev->deviceType() == TREADMILL) {
-                
-                // --- START OF FINAL FIX ---
-                // Determine the correct startup delay based on the device type.
-                int startupDelayMs = 10000; // Default 10s delay for real hardware.
 
-                if (dev->metaObject()->className() == QString("faketreadmill")) {
-                    // For the faketreadmill, a short 2s delay is sufficient and improves test speed.
-                    startupDelayMs = 2000;
-                    // A fake device has no blocking hardware handshake (`btinit`).
-                    qInfo() << "[main] Fake treadmill detected. Using a 2-second startup delay for ANT+.";
-                } else {
-                    // A real treadmill has a long-running, blocking `btinit()` function (~8s) that
-                    // competes for USB resources. We must use a delayed timer to start the ANT+
-                    // manager *after* this blocking call is guaranteed to have finished.
-                    qInfo() << "[main] Real treadmill detected. Using a 10-second startup delay for ANT+.";
-                }
-
-                QTimer::singleShot(startupDelayMs, [dev]() {
-                    if (dev && dev->connected()) {
-                        qInfo() << "[main] Initialization delay complete. Starting ANT+ Manager.";
-                        AntManager::instance().startForDevice(dev);
-                    } else {
-                        qWarning() << "[main] Device disconnected during initialization delay - ANT+ not started.";
-                    }
-                });
-              }
-        });
-
-        QObject::connect(app.get(), &QCoreApplication::aboutToQuit, &AntManager::instance(), [&]() {
-            qInfo() << "[main] Application shutting down. Stopping ANT+ Manager.";
-            AntManager::instance().stopForDevice(nullptr);
-        });
-    }
-    #endif
 
     QString mqtt_host = settings.value(QZSettings::mqtt_host, QZSettings::default_mqtt_host).toString();
     int mqtt_port = settings.value(QZSettings::mqtt_port, QZSettings::default_mqtt_port).toInt();
@@ -898,13 +904,106 @@ int main(int argc, char *argv[]) {
         FontManager fontManager;
         fontManager.initializeEmojiFont();
 #endif
+
+        fprintf(stderr, ">>> [DEBUG] Checkpoint 4: About to create QQmlApplicationEngine at %s\n",
+                QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz").toStdString().c_str());
+        fflush(stderr);
+
         QQmlApplicationEngine engine;
+
+        // [INJECT 2] Capture and print silent QML errors
+        QObject::connect(&engine, &QQmlApplicationEngine::warnings, 
+            [](const QList<QQmlError> &warnings) {
+                for (const QQmlError &warning : warnings) {
+                    fprintf(stderr, "\n!!! [QML ERROR] %s\n", warning.toString().toStdString().c_str());
+                    fflush(stderr);
+                }
+            }
+        );
+
+        // =========================================================================
+        // FINAL, CORRECT ANT+ PLUGIN AND SANITY CHECK LOGIC
+        // =========================================================================
+    #ifdef ANT_LINUX_ENABLED
+        // This block is compiled ONLY if ANT+ support was successfully enabled.
+        if (ant_footpod_enabled) {
+            qInfo() << "[ANT+] Feature requested. Attempting to load plugin...";
+
+            fprintf(stderr, ">>> [DEBUG] Feature requested. Attempting to load plugin.. %s\n",
+                QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz").toStdString().c_str());
+            fflush(stderr);
+
+            QString pluginPath = QDir(QCoreApplication::applicationDirPath()).filePath("libqz_ant.so");
+            QLibrary antLib(pluginPath);
+
+            // [INJECT 3] Help the linker resolve Python symbols
+            antLib.setLoadHints(QLibrary::ResolveAllSymbolsHint | QLibrary::ExportExternalSymbolsHint);
+
+            if (antLib.load()) {
+                qInfo() << "[ANT+] Plugin loaded successfully.";
+
+                fprintf(stderr, ">>> [DEBUG] Plugin loaded successfully.. %s\n",
+                    QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz").toStdString().c_str());
+                fflush(stderr);
+
+                typedef QObject* (*CreateAntManagerFunc)(QObject*);
+                CreateAntManagerFunc createFunc = (CreateAntManagerFunc)antLib.resolve("qz_ant_create");
+                if (createFunc) {
+                    QObject *antManager = createFunc(app.data());
+                    engine.rootContext()->setContextProperty("antManager", antManager);
+                } else {
+                    qWarning() << "[ANT+] Could not resolve 'qz_ant_create' symbol:" << antLib.errorString();
+                    fprintf(stderr, ">>> [DEBUG]  Could not resolve 'qz_ant_create' symbol.. %s %s\n", antLib.errorString(),
+                        QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz").toStdString().c_str());
+                    fflush(stderr);
+                }
+            } else {
+                // [INJECT 3b] Force error to stderr in case qWarning is suppressed
+                fprintf(stderr, "!!! [PLUGIN LOAD FAILURE] %s\n", antLib.errorString().toStdString().c_str());
+                qWarning() << "[ANT+] FAILED to load plugin library:" << antLib.errorString();
+                fprintf(stderr, ">>> [DEBUG]  FAILED to load plugin library: %s %s\n", antLib.errorString(),
+                    QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz").toStdString().c_str());
+                fflush(stderr);
+            }
+        }
+    #else
+        // --- START OF FINAL FIX ---
+        // This is the build-time sanity check. It runs if ANT_LINUX_ENABLED was NOT defined.
+        // We must parse the arguments here locally, as the global flags do not exist in this scope.
+        bool ant_requested = false;
+        for (int i = 1; i < argc; ++i) {
+            if (strcmp(argv[i], "-ant-footpod") == 0) {
+                ant_requested = true;
+                break;
+            }
+        }
+        if (ant_requested) {
+            fprintf(stderr, "=======================================================================\n");
+            fprintf(stderr, "[BUILD ERROR] CRITICAL FAILURE:\n");
+            fprintf(stderr, "This binary was compiled WITHOUT ANT+ support, but '-ant-footpod' was used.\n");
+            fprintf(stderr, "This indicates a failure in the 'antlinux.pri' build script.\n");
+            fprintf(stderr, "=======================================================================\n");
+            return 1; // Exit with an error.
+        }
+        // --- END OF FINAL FIX ---
+    #endif
+        // =========================================================================
+
         const QUrl url(QStringLiteral("qrc:/main.qml"));
         QObject::connect(
             &engine, &QQmlApplicationEngine::objectCreated, qobject_cast<QGuiApplication *>(app.data()),
             [url](QObject *obj, const QUrl &objUrl) {
-                if (!obj && url == objUrl)
+                fprintf(stderr, ">>> [DEBUG] Checkpoint 6: 'objectCreated' signal received at %s\n",
+                        QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz").toStdString().c_str());
+                fflush(stderr);
+                if (!obj && url == objUrl) {
+                    fprintf(stderr, ">>> [DEBUG] QML object creation FAILED. Exiting.\n");
+                    fflush(stderr);
                     QCoreApplication::exit(-1);
+                } else {
+                    fprintf(stderr, ">>> [DEBUG] QML object creation SUCCEEDED.\n");
+                    fflush(stderr);
+                }
             },
             Qt::QueuedConnection);
 
@@ -923,7 +1022,36 @@ int main(int argc, char *argv[]) {
 #ifdef Q_OS_ANDROID
         engine.rootContext()->setContextProperty("fontManager", &fontManager);
 #endif
-        engine.load(url);
+        fprintf(stderr, ">>> [DEBUG] Checkpoint 5: About to call engine.load() at %s\n",
+                QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz").toStdString().c_str());
+        fflush(stderr);
+
+    // --- Diagnostic: Capture QML warnings/errors to a log file ---
+    QFile dbg("/tmp/qz_qml_error.log");
+    if (dbg.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        QTextStream ts(&dbg);
+        ts << "=== QML engine diagnostic dump ===\n";
+        ts << "Environment snapshot:\n";
+        const char* vars[] = {"USER","HOME","DISPLAY","XDG_RUNTIME_DIR","XAUTHORITY","DBUS_SESSION_BUS_ADDRESS"};
+        for (auto &v : vars) {
+            const char* val = getenv(v);
+            ts << v << "=" << (val ? val : "(unset)") << "\n";
+        }
+        ts << "\n";
+
+        // Connect to the 'warnings' signal to capture loading errors.
+        QObject::connect(&engine, &QQmlApplicationEngine::warnings, [&](const QList<QQmlError> &warnings) {
+            ts << "---- QQmlEngine warnings/errors (" << warnings.count() << ") ----\n";
+            for (const QQmlError &e : warnings) {
+                ts << "Error: " << e.toString() << "\n";
+                ts << "URL: " << e.url().toString() << " line:" << e.line() << "\n";
+            }
+            ts.flush();
+        });
+    }
+
+    engine.load(url);
+
         homeform *h = new homeform(&engine, &bl);
         QObject::connect(app.data(), &QCoreApplication::aboutToQuit, h,
                          &homeform::aboutToQuit); // NOTE: clazy-unneeded-cast
@@ -973,6 +1101,9 @@ int main(int argc, char *argv[]) {
         new BluetoothHandler(&bl, eventGearDevice);
 #endif
 #endif
+    fprintf(stderr, ">>> [DEBUG] About to call app->exec() at %s\n",
+            QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz").toStdString().c_str());
+    fflush(stderr);
     return app->exec();
 #endif
 }

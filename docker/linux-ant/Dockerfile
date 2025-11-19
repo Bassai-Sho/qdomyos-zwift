@@ -1,23 +1,25 @@
 # =============================================================================
-# Dockerfile for QDomyos-Zwift (Linux x86-64 with ANT+)
-#
-# This file defines a multi-stage build to compile the application for the
-# linux/amd64 platform, mirroring the environment of the linux-x86-build job.
+# QDomyos-Zwift Dockerfile (Build + Package Only, Debian Bookworm)
 # =============================================================================
 
-# --- Stage 1: The Builder ---
 FROM debian:bookworm AS builder
-
-# Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
+# -----------------------------------------------------------------------------
+# Build-time dependencies only (kept minimal)
+# -----------------------------------------------------------------------------
+# Qt build deps (headers + qmake)
+# Python 3.11 + venv + headers (needed for pybind11)
+# USB + UDev for ANT+ broadcaster compilation
+# -----------------------------------------------------------------------------
+# Install all necessary build dependencies.
 # Install all necessary build dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     cmake \
     xvfb \
-    # Core Qt5 development packages
+    patchelf \
     qtbase5-dev \
     qtbase5-private-dev \
     qtchooser \
@@ -53,38 +55,85 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libusb-1.0-0-dev \
     libudev-dev
 
-# Set up the Python virtual environment for ANT+ support
+# -----------------------------------------------------------------------------
+# Create Python venv for ANT+ module
+# -----------------------------------------------------------------------------
 RUN python3 -m venv /opt/ant_venv && \
-    /opt/ant_venv/bin/pip install --upgrade pip --quiet && \
-    /opt/ant_venv/bin/pip install openant pyusb pybind11 --quiet
+    /opt/ant_venv/bin/pip install --quiet --upgrade pip && \
+    /opt/ant_venv/bin/pip install --quiet openant pyusb pybind11
 
-# Copy the entire project source into the container
+# -----------------------------------------------------------------------------
+# Copy full QZ source tree
+# -----------------------------------------------------------------------------
 WORKDIR /app
 COPY . .
-
-# Initialize git submodules
 RUN git submodule update --init --recursive
 
-# Instead of compiling qthttpserver, we copy the pre-built headers,
-# exactly like the original linux-x86-build CI job.
-RUN cp qHttpServerBin/5.15.2/headers/* src/qthttpserver/src/3rdparty/http-parser/
+# --- START OF FINAL FIX: Set Executable Permissions ---
+# The build scripts must have the executable bit set to be run by 'make'.
+RUN chmod +x src/devices/antlinux/check_ant_env.sh \
+             src/devices/antlinux/py_to_header.py
+# --- END OF FINAL FIX ---
 
-# Configure the project for an ANT+ build
-RUN echo 'include(devices/antlinux/antlinux.pri)' >> src/qdomyos-zwift.pro && \
-    echo '/opt/ant_venv/bin/python3' > src/.ant_venv_path
+# -----------------------------------------------------------------------------
+# Create .ant_venv_path for plugin + C++ AntWorker
+# -----------------------------------------------------------------------------
+RUN echo -n "/opt/ant_venv/bin/python3" > /app/src/.ant_venv_path
+RUN chmod 644 /app/src/.ant_venv_path
 
-# --- OPTIMIZED BUILD STEP ---
-# 1. Run qmake with explicit release and path-mapping flags.
-# 2. Run make to compile the application.
-# 3. Run strip on the final binary to remove debug symbols and reduce size.
-RUN cd src && \
-    qmake "CONFIG+=release" "QMAKE_CXXFLAGS+=-ffile-prefix-map=/app=." qdomyos-zwift.pro && \
-    make -j$(nproc) && \
-    strip qdomyos-zwift
+# Diagnostic: Verify the file was created in the right place.
+RUN cat /app/src/.ant_venv_path
 
-# --- Stage 2: The Final Artifact ---
-# Use a valid, non-empty base image to solve the "no command specified" error.
-FROM debian:bookworm
+# -----------------------------------------------------------------------------
+# Ensure ANT+ plugin integrated in qmake graph
+# -----------------------------------------------------------------------------
+#RUN grep -q "antlinux.pri" src/qdomyos-zwift.pro || \
+#    echo -e "\n# Enable ANT+ feature\ninclude(devices/antlinux/antlinux.pri)" >> src/qdomyos-zwift.pro
 
-# Copy the compiled binary from the builder stage
-COPY --from=builder /app/src/qdomyos-zwift /qdomyos-zwift-x86-64-ant
+RUN sed -i -e "/^!ios: !android: {/r /dev/stdin" \
+           -e "/^!ios: !android: {/,/}/d" \
+           qdomyos-zwift.pro <<'EOF'
+!ios: !android: {
+    SUBDIRS = \
+        src/qdomyos-zwift-lib.pro \
+        src \
+        ant_plugin \
+        tst/qdomyos-zwift-tests.pro
+
+    src.file = src/qdomyos-zwift.pro
+    ant_plugin.file = src/devices/antlinux/qz_ant_plugin.pro
+
+    src.depends = src/qdomyos-zwift-lib.pro
+    ant_plugin.depends = src/qdomyos-zwift-lib.pro
+    tst.depends = src/qdomyos-zwift-lib.pro
+}
+EOF
+
+# -----------------------------------------------------------------------------
+# Build application + plugin
+# -----------------------------------------------------------------------------
+RUN qmake qdomyos-zwift.pro && make -j$(nproc)
+
+# -----------------------------------------------------------------------------
+# Stage 2: The Final Artifact Package
+# -----------------------------------------------------------------------------
+# This stage creates a clean, minimal image containing ONLY the final distributable files.
+FROM debian:bookworm-slim
+
+# Create a distribution directory.
+WORKDIR /dist
+
+# Copy all three required components from the 'builder' stage into this directory.
+# This creates the exact file structure we want in our final .tar.gz.
+
+# 1. Copy the main executable.
+COPY --from=builder /app/src/qdomyos-zwift .
+
+# 2. Copy the ANT+ plugin shared library.
+COPY --from=builder /app/src/libqz_ant.so .
+
+# 3. Copy the entire Python virtual environment.
+COPY --from=builder /opt/ant_venv ./ant_venv
+
+# Add a dummy command to ensure the image is valid for 'docker create'.
+CMD ["/bin/true"]

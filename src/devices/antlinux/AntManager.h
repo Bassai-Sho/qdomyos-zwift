@@ -14,20 +14,19 @@
 #ifndef ANTMANAGER_H
 #define ANTMANAGER_H
 
-#ifdef ANT_LINUX_ENABLED
 #include <QObject>
 #include "devices/bluetoothdevice.h"
 
-class AntWorker; // Forward declaration
-class QThread;
+class AntWorker;
 
 class AntManager : public QObject {
     Q_OBJECT
 public:
     static AntManager& instance();
-
     void startForDevice(bluetoothdevice* device);
     void stopForDevice(bluetoothdevice* device);
+    static QString validateEnvironment();
+    void reparent(QObject* newParent);
 
 private slots:
     void onWorkerFinished();
@@ -43,5 +42,4 @@ private:
     bluetoothdevice* m_currentDevice = nullptr;
 };
 
-#endif // ANT_LINUX_ENABLED
 #endif // ANTMANAGER_H

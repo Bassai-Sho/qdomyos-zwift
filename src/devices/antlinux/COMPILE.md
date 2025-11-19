@@ -47,6 +47,7 @@ sudo apt-get install -y \
 ### Check Python Availability
 
 ```bash
+sudo apt-get install -y python3.11 python3.11-venv
 python3 --version
 ```
 
@@ -57,27 +58,12 @@ You can use any Python 3.x version for compilation. Common versions include Pyth
 ### Install Python 3.11 via pyenv
 
 ```bash
-# Install pyenv dependencies
+# Install pyenv packages
 sudo apt-get install -y \
-	git \
-	curl \
-	build-essential \
-	libssl-dev \
-	zlib1g-dev \
-	libbz2-dev \
-	libreadline-dev \
-	libsqlite3-dev \
-	wget \
-	llvm \
-	libncurses5-dev \
-	libncursesw5-dev \
-	xz-utils \
-	tk-dev \
-	libffi-dev \
-	liblzma-dev
-
-# Note: On Ubuntu 24.04+, use libncurses-dev instead of libncurses5-dev/libncursesw5-dev
-# sudo apt-get install -y libncurses-dev
+  git curl build-essential libssl-dev zlib1g-dev \
+  libbz2-dev libreadline-dev libsqlite3-dev wget llvm \
+  libncurses-dev libncurses5-dev libncursesw5-dev \
+  xz-utils tk-dev libffi-dev liblzma-dev
 
 # Install pyenv
 curl https://pyenv.run | bash

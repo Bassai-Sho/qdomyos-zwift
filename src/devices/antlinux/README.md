@@ -77,38 +77,19 @@ sudo apt-get install -y \
 The pre-compiled binaries require Python 3.11. Check if it's available:
 
 ```bash
-python3.11 --version
-```
-
-**If Python 3.11 is available:**
-```bash
 sudo apt-get install -y python3.11 python3.11-venv
+python3 --version
 ```
 
 **If Python 3.11 is not available** (some distributions may only provide older or newer Python versions), install via pyenv:
 
 ```bash
-# Install pyenv dependencies
+# Install pyenv packages
 sudo apt-get install -y \
-	git \
-	curl \
-	build-essential \
-	libssl-dev \
-	zlib1g-dev \
-	libbz2-dev \
-	libreadline-dev \
-	libsqlite3-dev \
-	wget \
-	llvm \
-	libncurses5-dev \
-	libncursesw5-dev \
-	xz-utils \
-	tk-dev \
-	libffi-dev \
-	liblzma-dev
-
-# Note: On Ubuntu 24.04+, use libncurses-dev instead of libncurses5-dev/libncursesw5-dev
-# sudo apt-get install -y libncurses-dev
+  git curl build-essential libssl-dev zlib1g-dev \
+  libbz2-dev libreadline-dev libsqlite3-dev wget llvm \
+  libncurses-dev libncurses5-dev libncursesw5-dev \
+  xz-utils tk-dev libffi-dev liblzma-dev
 
 # Install pyenv
 curl https://pyenv.run | bash
@@ -124,6 +105,12 @@ source ~/.bashrc
 # Install Python 3.11
 pyenv install 3.11.9
 pyenv global 3.11.9
+
+# Create a new linker configuration file:
+echo '$HOME/.pyenv/versions/3.11.9/lib' | sudo tee /etc/ld.so.conf.d/pyenv.conf
+
+# Update the linkers cache
+sudo ldconfig
 
 # Verify
 python --version  # Should show Python 3.11.9
